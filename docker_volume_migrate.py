@@ -220,11 +220,14 @@ def resolve_migration_mode(args: argparse.Namespace) -> tuple[str, Optional[str]
     if args.yes:
         return "volume", None
     console.print("\n[bold]How would you like to migrate bind mounts?[/bold]")
-    console.print("  [1] Named Docker volumes  [dim](data stored in /var/lib/docker/volumes)[/dim]")
-    console.print("  [2] Directory             [dim](e.g. NFS mount point — bind mount to a host path)[/dim]")
+    console.print("  [1] Named Docker volume    [dim](recommended — Docker manages storage in /var/lib/docker/volumes)[/dim]")
+    console.print("  [2] Relocate bind mount    [dim](keeps it as a bind mount at a new host path — use this for NFS or a specific disk)[/dim]")
+    console.print()
+    console.print("  [dim]Note: named volumes cannot be stored at a custom path. If you need data on an NFS share")
+    console.print("  or a specific mount point, choose option 2 — it relocates the bind mount to that path.[/dim]")
     choice = Prompt.ask("  Select", choices=["1", "2"], default="1")
     if choice == "2":
-        base = Prompt.ask("  Base directory (e.g. /mnt/nfs)").strip()
+        base = Prompt.ask("  Host path to migrate data into (e.g. /mnt/nfs)").strip()
         if not os.path.isdir(base):
             console.print(f"  [yellow]Warning: '{base}' does not exist or is not a directory.[/yellow]")
         return "directory", base
