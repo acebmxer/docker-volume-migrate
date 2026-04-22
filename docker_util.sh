@@ -68,7 +68,7 @@ if [ ! -f "$REQUIREMENTS" ]; then
     error "requirements.txt not found at $REQUIREMENTS"
 fi
 
-MISSING=$("$PYTHON" - <<'EOF' 2>/dev/null
+MISSING=$("$PYTHON" - <<'EOF' 2>/dev/null || true
 import importlib.util, sys
 checks = [
     ("docker",      "docker>=6.0.0"),
@@ -83,7 +83,7 @@ EOF
 if [ -n "$MISSING" ]; then
     info "Installing missing packages..."
     PKGS=()
-    while IFS= read -r pkg; do PKGS+=("$pkg"); done <<< "$MISSING"
+    while IFS= read -r pkg; do PKGS+=("$pkg"); done <<< "$MISSING" || true
 
     if "$PYTHON" -m pip install --quiet "${PKGS[@]}" 2>/dev/null; then
         info "Dependencies installed."
