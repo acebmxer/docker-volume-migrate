@@ -36,6 +36,7 @@ class BindMount:
     read_write: bool
     mode: str
     propagation: str
+    type: str = "bind"  # "bind" or "volume"
 
 
 @dataclass
@@ -44,7 +45,7 @@ class ContainerInfo:
     name: str
     state: str
     image: str
-    bind_mounts: list[BindMount]
+    mounts: list[BindMount]
     is_compose_managed: bool
     compose_project: Optional[str]
     compose_service: Optional[str]
@@ -116,19 +117,29 @@ def discover_containers(
         if filter_names and name not in filter_names:
             continue
         attrs = c.attrs
-        mounts = attrs.get("Mounts") or []
-        bind_mounts = [
-            BindMount(
-                source=m["Source"],
-                destination=m["Destination"],
-                read_write=m.get("RW", True),
-                mode=m.get("Mode", "rw"),
-                propagation=m.get("Propagation", ""),
-            )
-            for m in mounts
-            if m.get("Type") == "bind"
-        ]
-        if not bind_mounts:
+        raw_mounts = attrs.get("Mounts") or []
+        container_mounts = []
+        for m in raw_mounts:
+            mtype = m.get("Type", "bind")
+            if mtype == "bind":
+                container_mounts.append(BindMount(
+                    source=m.get("Source", ""),
+                    destination=m["Destination"],
+                    read_write=m.get("RW", True),
+                    mode=m.get("Mode", "rw"),
+                    propagation=m.get("Propagation", ""),
+                    type="bind",
+                ))
+            elif mtype == "volume":
+                container_mounts.append(BindMount(
+                    source=m.get("Name", ""),
+                    destination=m["Destination"],
+                    read_write=m.get("RW", True),
+                    mode=m.get("Mode", ""),
+                    propagation="",
+                    type="volume",
+                ))
+        if not container_mounts:
             continue
         labels = (attrs.get("Config") or {}).get("Labels") or {}
         result.append(ContainerInfo(
@@ -136,7 +147,7 @@ def discover_containers(
             name=name,
             state=attrs["State"]["Status"],
             image=attrs["Config"]["Image"],
-            bind_mounts=bind_mounts,
+            mounts=container_mounts,
             is_compose_managed="com.docker.compose.project" in labels,
             compose_project=labels.get("com.docker.compose.project"),
             compose_service=labels.get("com.docker.compose.service"),
@@ -152,13 +163,14 @@ def discover_containers(
 
 def print_report(containers: list[ContainerInfo]) -> None:
     if not containers:
-        console.print("[green]No containers with bind mounts found.[/green]")
+        console.print("[green]No containers with mounts found.[/green]")
         return
 
-    table = Table(title="Containers with Bind Mounts", show_lines=True)
+    table = Table(title="Containers with Mounts", show_lines=True)
     table.add_column("Container", style="cyan", no_wrap=True)
     table.add_column("State")
-    table.add_column("Host Path", style="yellow")
+    table.add_column("Type", justify="center")
+    table.add_column("Source", style="yellow")
     table.add_column("Mount Point", style="blue")
     table.add_column("RW", justify="center")
     table.add_column("Flags")
@@ -168,11 +180,13 @@ def print_report(containers: list[ContainerInfo]) -> None:
         if c.is_compose_managed:
             flags.append("[magenta]compose[/magenta]")
         state_color = "green" if c.state == "running" else "dim"
-        for i, m in enumerate(c.bind_mounts):
+        for i, m in enumerate(c.mounts):
             rw_str = "rw" if m.read_write else "[dim]ro[/dim]"
+            type_str = "[yellow]bind[/yellow]" if m.type == "bind" else "[blue]volume[/blue]"
             table.add_row(
                 c.name if i == 0 else "",
                 f"[{state_color}]{c.state}[/{state_color}]" if i == 0 else "",
+                type_str,
                 m.source,
                 m.destination,
                 rw_str,
@@ -180,7 +194,7 @@ def print_report(containers: list[ContainerInfo]) -> None:
             )
 
     console.print(table)
-    console.print(f"\nTotal: [bold]{len(containers)}[/bold] container(s) with bind mounts\n")
+    console.print(f"\nTotal: [bold]{len(containers)}[/bold] container(s) with mounts\n")
 
 
 # ---------------------------------------------------------------------------
@@ -219,15 +233,19 @@ def resolve_migration_mode(args: argparse.Namespace) -> tuple[str, Optional[str]
         return "directory", args.target_dir
     if args.yes:
         return "volume", None
-    console.print("\n[bold]How would you like to migrate bind mounts?[/bold]")
+    console.print("\n[bold]How would you like to migrate mounts?[/bold]")
     console.print("  [1] Named Docker volume    [dim](recommended — Docker manages storage in /var/lib/docker/volumes)[/dim]")
     console.print(
-        "  [2] Relocate bind mount    "
-        "[dim](keeps it as a bind mount at a new host path — use this for NFS or a specific disk)[/dim]"
+        "  [2] Relocate to host path  "
+        "[dim](stores data at a new host path — use this for NFS or a specific disk)[/dim]"
     )
+    console.print("  [3] Exit")
     console.print()
-    console.print("  [dim]Note: named volumes cannot be stored at a custom path. If you need data on an NFS share\n  or a specific mount point, choose option 2 — it relocates the bind mount to that path.[/dim]")
-    choice = Prompt.ask("  Select", choices=["1", "2"], default="1")
+    console.print("  [dim]Note: named volumes cannot be stored at a custom path. If you need data on an NFS share\n  or a specific mount point, choose option 2 — it relocates the data to that path.[/dim]")
+    choice = Prompt.ask("  Select", choices=["1", "2", "3"], default="1")
+    if choice == "3":
+        console.print("[yellow]Exiting.[/yellow]")
+        sys.exit(0)
     if choice == "2":
         base = Prompt.ask("  Host path to migrate data into (e.g. /mnt/nfs)").strip()
         if not os.path.isdir(base):
@@ -260,7 +278,7 @@ def plan_container(
 
     prefix = getattr(args, "volume_prefix", "") or ""
 
-    for m in c.bind_mounts:
+    for m in c.mounts:
         if mode == "directory":
             suggested = suggest_target_path(target_dir, c.name, m.destination, prefix)
 
@@ -270,7 +288,7 @@ def plan_container(
             else:
                 rw_label = "rw" if m.read_write else "ro"
                 console.print(
-                    f"\n  Bind mount: [yellow]{m.source}[/yellow] → [blue]{m.destination}[/blue] "
+                    f"\n  Mount ({m.type}): [yellow]{m.source}[/yellow] → [blue]{m.destination}[/blue] "
                     f"\\[{rw_label}]"
                 )
                 console.print(f"  Suggested target path: [bold]{suggested}[/bold]")
@@ -302,7 +320,7 @@ def plan_container(
             else:
                 rw_label = "rw" if m.read_write else "ro"
                 console.print(
-                    f"\n  Bind mount: [yellow]{m.source}[/yellow] → [blue]{m.destination}[/blue] "
+                    f"\n  Mount ({m.type}): [yellow]{m.source}[/yellow] → [blue]{m.destination}[/blue] "
                     f"\\[{rw_label}]"
                 )
                 console.print(f"  Suggested volume name: [bold]{candidate}[/bold]")
@@ -414,14 +432,19 @@ class Migrator:
         container.stop(timeout=timeout)
         console.print("[green]OK[/green]")
 
-    def copy_data(self, host_path: str, volume_name: str) -> None:
+    def copy_data(self, source: str, volume_name: str, source_type: str = "bind") -> None:
         image = getattr(self.args, "copy_image", "alpine:latest") or "alpine:latest"
-        console.print(f"  Copying data [yellow]{host_path}[/yellow] → volume [bold]{volume_name}[/bold]...", end=" ")
+        console.print(f"  Copying data [yellow]{source}[/yellow] → volume [bold]{volume_name}[/bold]...", end=" ")
+        src_mount = (
+            Mount(target="/src", source=source, type="volume", read_only=True)
+            if source_type == "volume"
+            else Mount(target="/src", source=source, type="bind", read_only=True)
+        )
         output = self.client.containers.run(
             image=image,
             command=["sh", "-c", "cp -a /src/. /dst/ && echo COPY_OK"],
             mounts=[
-                Mount(target="/src", source=host_path, type="bind", read_only=True),
+                src_mount,
                 Mount(target="/dst", source=volume_name, type="volume"),
             ],
             remove=True,
@@ -433,16 +456,21 @@ class Migrator:
             raise RuntimeError(f"Data copy failed. Output: {output.decode(errors='replace')[:500]}")
         console.print("[green]OK[/green]")
 
-    def copy_data_to_dir(self, host_path: str, target_path: str) -> None:
+    def copy_data_to_dir(self, source: str, target_path: str, source_type: str = "bind") -> None:
         image = getattr(self.args, "copy_image", "alpine:latest") or "alpine:latest"
         os.makedirs(target_path, exist_ok=True)
-        console.print(f"  Copying data [yellow]{host_path}[/yellow] → [bold]{target_path}[/bold]...", end=" ")
+        console.print(f"  Copying data [yellow]{source}[/yellow] → [bold]{target_path}[/bold]...", end=" ")
         os.chmod(target_path, 0o777)
+        src_mount = (
+            Mount(target="/src", source=source, type="volume", read_only=True)
+            if source_type == "volume"
+            else Mount(target="/src", source=source, type="bind", read_only=True)
+        )
         output = self.client.containers.run(
             image=image,
             command=["sh", "-c", "cp -a /src/. /dst/ && echo COPY_OK"],
             mounts=[
-                Mount(target="/src", source=host_path, type="bind", read_only=True),
+                src_mount,
                 Mount(target="/dst", source=target_path, type="bind"),
             ],
             remove=True,
@@ -463,8 +491,8 @@ class Migrator:
         cfg = attrs["Config"]
         hcfg = attrs["HostConfig"]
 
-        vol_replace = {mp.mount.source: mp.volume_name for mp in active_plans if not mp.is_directory_mode}
-        dir_replace = {mp.mount.source: mp.target_path for mp in active_plans if mp.is_directory_mode}
+        vol_replace = {mp.mount.source: (mp.volume_name, mp.mount.type) for mp in active_plans if not mp.is_directory_mode}
+        dir_replace = {mp.mount.source: (mp.target_path, mp.mount.type) for mp in active_plans if mp.is_directory_mode}
         mounts = self._build_mounts(attrs.get("Mounts") or [], vol_replace, dir_replace)
 
         log_config = None
@@ -523,8 +551,8 @@ class Migrator:
     def _build_mounts(
         self,
         attrs_mounts: list[dict],
-        vol_replace: dict[str, str],
-        dir_replace: dict[str, str],
+        vol_replace: dict[str, tuple[str, str]],
+        dir_replace: dict[str, tuple[str, str]],
     ) -> list[Mount]:
         result = []
         for m in attrs_mounts:
@@ -536,14 +564,14 @@ class Migrator:
                 if src in vol_replace:
                     result.append(Mount(
                         target=dest,
-                        source=vol_replace[src],
+                        source=vol_replace[src][0],
                         type="volume",
                         read_only=not rw,
                     ))
                 elif src in dir_replace:
                     result.append(Mount(
                         target=dest,
-                        source=dir_replace[src],
+                        source=dir_replace[src][0],
                         type="bind",
                         read_only=not rw,
                         propagation="rprivate",
@@ -557,12 +585,29 @@ class Migrator:
                         propagation=m.get("Propagation") or "rprivate",
                     ))
             elif mtype == "volume":
-                result.append(Mount(
-                    target=dest,
-                    source=m.get("Name", ""),
-                    type="volume",
-                    read_only=not rw,
-                ))
+                vol_name = m.get("Name", "")
+                if vol_name in vol_replace:
+                    result.append(Mount(
+                        target=dest,
+                        source=vol_replace[vol_name][0],
+                        type="volume",
+                        read_only=not rw,
+                    ))
+                elif vol_name in dir_replace:
+                    result.append(Mount(
+                        target=dest,
+                        source=dir_replace[vol_name][0],
+                        type="bind",
+                        read_only=not rw,
+                        propagation="rprivate",
+                    ))
+                else:
+                    result.append(Mount(
+                        target=dest,
+                        source=vol_name,
+                        type="volume",
+                        read_only=not rw,
+                    ))
             elif mtype == "tmpfs":
                 result.append(Mount(target=dest, source="", type="tmpfs"))
         return result
@@ -694,9 +739,9 @@ class Migrator:
             if not getattr(self.args, "skip_copy", False):
                 for mp in plan.active_plans():
                     if mp.is_directory_mode:
-                        self.copy_data_to_dir(mp.mount.source, mp.target_path)
+                        self.copy_data_to_dir(mp.mount.source, mp.target_path, mp.mount.type)
                     else:
-                        self.copy_data(mp.mount.source, mp.volume_name)
+                        self.copy_data(mp.mount.source, mp.volume_name, mp.mount.type)
             stage = "data_copied"
 
             # Stage 4: update compose file (before container removal so it's done even if recreation fails)
@@ -868,13 +913,13 @@ def update_compose_file(
                     new_volumes.append(":".join([path_to_dir[resolved]] + parts[1:]))
                     updated_count += 1
                     continue
-        elif isinstance(vol, dict) and vol.get("type") == "bind":
-            resolved = _resolve_bind_source(vol.get("source", ""), working_dir)
+        elif isinstance(vol, dict) and vol.get("type") in ("bind", "volume"):
+            src = vol.get("source", "")
+            resolved = _resolve_bind_source(src, working_dir) if vol.get("type") == "bind" else src
             if resolved in path_to_vol:
-                vol_name = path_to_vol[resolved]
                 new_vol = ruamel_comments.CommentedMap()
                 new_vol["type"] = "volume"
-                new_vol["source"] = vol_name
+                new_vol["source"] = path_to_vol[resolved]
                 new_vol["target"] = vol.get("target", vol.get("destination", ""))
                 if not vol.get("read_only", False) is False:
                     new_vol["read_only"] = vol["read_only"]
@@ -895,7 +940,7 @@ def update_compose_file(
 
     if updated_count == 0:
         console.print(
-            f"  [yellow]No matching bind mount entries found in {compose_file} "
+            f"  [yellow]No matching mount entries found in {compose_file} "
             f"for service '{c.compose_service}' — check paths and update manually.[/yellow]"
         )
         return False
@@ -975,7 +1020,7 @@ Examples:
 
     p.add_argument("-c", "--container", metavar="NAME", action="append", dest="containers",
                    help="Limit to container(s) by name (repeatable)")
-    p.add_argument("-l", "--list", action="store_true", help="List bind mounts and exit")
+    p.add_argument("-l", "--list", action="store_true", help="List all container mounts and exit")
     p.add_argument("-n", "--dry-run", action="store_true", help="Show planned actions, make no changes")
     p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm all prompts")
     p.add_argument("--target-dir", metavar="PATH",
@@ -1017,7 +1062,7 @@ def main() -> None:
     with console.status("Scanning containers..."):
         containers = discover_containers(client, filter_names=args.containers)
 
-    console.print(f"Found [bold]{len(containers)}[/bold] container(s) with bind mounts.\n")
+    console.print(f"Found [bold]{len(containers)}[/bold] container(s) with mounts.\n")
 
     if not containers:
         return
@@ -1037,7 +1082,7 @@ def main() -> None:
     console.print("\n[bold]Migration Plan:[/bold]")
     summary = Table(show_lines=True)
     summary.add_column("Container", style="cyan")
-    summary.add_column("Bind Mount", style="yellow")
+    summary.add_column("Source", style="yellow")
     summary.add_column("Destination", style="green")
     for plan in active_plans:
         for i, mp in enumerate(plan.active_plans()):
