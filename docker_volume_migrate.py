@@ -10,9 +10,25 @@ import os
 import re
 import shutil
 import signal
+import stat
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+
+def _ensure_dep(package: str, import_name: str | None = None) -> None:
+    import importlib
+    import subprocess
+    name = import_name or package
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        print(f"Installing missing dependency: {package}", flush=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package])
+
+
+_ensure_dep("docker")
+_ensure_dep("rich")
+_ensure_dep("ruamel.yaml", "ruamel.yaml")
 
 import docker
 import docker.errors
@@ -37,6 +53,7 @@ class BindMount:
     mode: str
     propagation: str
     type: str = "bind"  # "bind" or "volume"
+    is_socket: bool = False
 
 
 @dataclass
@@ -122,13 +139,15 @@ def discover_containers(
         for m in raw_mounts:
             mtype = m.get("Type", "bind")
             if mtype == "bind":
+                src = m.get("Source", "")
                 container_mounts.append(BindMount(
-                    source=m.get("Source", ""),
+                    source=src,
                     destination=m["Destination"],
                     read_write=m.get("RW", True),
                     mode=m.get("Mode", "rw"),
                     propagation=m.get("Propagation", ""),
                     type="bind",
+                    is_socket=os.path.exists(src) and stat.S_ISSOCK(os.stat(src).st_mode),
                 ))
             elif mtype == "volume":
                 container_mounts.append(BindMount(
@@ -302,6 +321,10 @@ def plan_container(
     prefix = getattr(args, "volume_prefix", "") or ""
 
     for m in c.mounts:
+        if m.is_socket:
+            console.print(f"  [dim]Skipping socket mount:[/dim] {m.source} (kept as bind mount)")
+            plan.mount_plans.append(MountPlan(mount=m, volume_name="", skip=True))
+            continue
         if mode == "directory":
             suggested = suggest_target_path(target_dir, c.name, m.destination, prefix)
 
@@ -929,14 +952,7 @@ def update_compose_file(
         )
         return False
 
-    try:
-        from ruamel.yaml import YAML, comments as ruamel_comments
-    except ImportError:
-        console.print(
-            "  [yellow]ruamel.yaml is not installed — cannot auto-update compose file.[/yellow]\n"
-            "  [dim]Install with: pip install ruamel.yaml[/dim]"
-        )
-        return False
+    from ruamel.yaml import YAML, comments as ruamel_comments
 
     yaml = YAML()
     yaml.preserve_quotes = True
