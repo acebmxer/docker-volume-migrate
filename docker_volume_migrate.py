@@ -430,6 +430,44 @@ def show_dry_run(plans: list[ContainerPlan]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+
+def _check_target_dir_writable(plans: list[ContainerPlan]) -> bool:
+    """Return True if all target base directories are writable; print errors and return False if not."""
+    # Collect unique ancestor paths that must be writable (the deepest existing parent of each target)
+    problem_dirs: set[str] = set()
+    for plan in plans:
+        for mp in plan.active_plans():
+            if not mp.is_directory_mode:
+                continue
+            # Walk up to find the first existing ancestor and test write access
+            check = mp.target_path
+            while check and check != os.path.dirname(check):
+                if os.path.exists(check):
+                    if not os.access(check, os.W_OK):
+                        problem_dirs.add(check)
+                    break
+                check = os.path.dirname(check)
+
+    if not problem_dirs:
+        return True
+
+    console.print()
+    console.print(Panel(
+        "[red]Permission denied[/red] — the current user cannot write to the following path(s):\n\n"
+        + "\n".join(f"  [yellow]{d}[/yellow]" for d in sorted(problem_dirs))
+        + "\n\nFix with one of:\n"
+        "  [cyan]sudo chown $USER " + " ".join(sorted(problem_dirs)) + "[/cyan]\n"
+        "  [cyan]sudo chmod o+w " + " ".join(sorted(problem_dirs)) + "[/cyan]\n"
+        "  or re-run this script with [cyan]sudo[/cyan]",
+        title="[red]Pre-flight Check Failed[/red]",
+        border_style="red",
+    ))
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Migration engine
 # ---------------------------------------------------------------------------
 
@@ -1122,6 +1160,9 @@ def main() -> None:
         show_dry_run(active_plans)
         console.print("\n[yellow]Dry run complete — no changes made.[/yellow]")
         return
+
+    if not _check_target_dir_writable(active_plans):
+        sys.exit(1)
 
     if not args.yes:
         if not Confirm.ask(
