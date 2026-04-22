@@ -139,8 +139,6 @@ def discover_containers(
                     propagation="",
                     type="volume",
                 ))
-        if not container_mounts:
-            continue
         labels = (attrs.get("Config") or {}).get("Labels") or {}
         result.append(ContainerInfo(
             id=attrs["Id"],
@@ -161,40 +159,65 @@ def discover_containers(
 # Reporting
 # ---------------------------------------------------------------------------
 
+def _group_containers(containers: list[ContainerInfo]) -> list[tuple[str, list[ContainerInfo]]]:
+    """Return [(group_label, [ContainerInfo, ...]), ...] ordered by first-seen."""
+    seen: dict[str, list[ContainerInfo]] = {}
+    for c in containers:
+        key = c.compose_project if c.compose_project else c.name
+        seen.setdefault(key, []).append(c)
+    return list(seen.items())
+
+
 def print_report(containers: list[ContainerInfo]) -> None:
     if not containers:
-        console.print("[green]No containers with mounts found.[/green]")
+        console.print("[green]No containers found.[/green]")
         return
 
-    table = Table(title="Containers with Mounts", show_lines=True)
-    table.add_column("Container", style="cyan", no_wrap=True)
+    groups = _group_containers(containers)
+
+    table = Table(title="Docker Containers & Mounts", show_lines=True)
+    table.add_column("Project / Container", style="cyan", no_wrap=True)
+    table.add_column("Service", style="dim", no_wrap=True)
     table.add_column("State")
     table.add_column("Type", justify="center")
     table.add_column("Source", style="yellow")
     table.add_column("Mount Point", style="blue")
     table.add_column("RW", justify="center")
-    table.add_column("Flags")
 
-    for c in containers:
-        flags = []
-        if c.is_compose_managed:
-            flags.append("[magenta]compose[/magenta]")
-        state_color = "green" if c.state == "running" else "dim"
-        for i, m in enumerate(c.mounts):
-            rw_str = "rw" if m.read_write else "[dim]ro[/dim]"
-            type_str = "[yellow]bind[/yellow]" if m.type == "bind" else "[blue]volume[/blue]"
-            table.add_row(
-                c.name if i == 0 else "",
-                f"[{state_color}]{c.state}[/{state_color}]" if i == 0 else "",
-                type_str,
-                m.source,
-                m.destination,
-                rw_str,
-                " ".join(flags) if i == 0 else "",
-            )
+    for group_label, members in groups:
+        # Collect all rows for this group first so we know total row count
+        rows: list[tuple] = []
+        for c in members:
+            state_color = "green" if c.state == "running" else "dim"
+            state_str = f"[{state_color}]{c.state}[/{state_color}]"
+            service_str = c.compose_service or ""
+            if c.mounts:
+                for i, m in enumerate(c.mounts):
+                    rw_str = "rw" if m.read_write else "[dim]ro[/dim]"
+                    type_str = "[yellow]bind[/yellow]" if m.type == "bind" else "[blue]volume[/blue]"
+                    rows.append((
+                        service_str if i == 0 else "",
+                        state_str if i == 0 else "",
+                        type_str,
+                        m.source,
+                        m.destination,
+                        rw_str,
+                    ))
+            else:
+                rows.append((service_str, state_str, "[dim]—[/dim]", "[dim]no mounts[/dim]", "", ""))
+
+        # Emit rows — project label only on the first row of the group
+        for i, row in enumerate(rows):
+            project_cell = f"[bold]{group_label}[/bold]" if i == 0 else ""
+            table.add_row(project_cell, *row)
 
     console.print(table)
-    console.print(f"\nTotal: [bold]{len(containers)}[/bold] container(s) with mounts\n")
+    total_groups = len(groups)
+    total_containers = len(containers)
+    if total_groups == total_containers:
+        console.print(f"\nTotal: [bold]{total_containers}[/bold] container(s)\n")
+    else:
+        console.print(f"\nTotal: [bold]{total_groups}[/bold] stack(s) / [bold]{total_containers}[/bold] container(s)\n")
 
 
 # ---------------------------------------------------------------------------
