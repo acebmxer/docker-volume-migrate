@@ -1,0 +1,27 @@
+[MAIN]
+py-version = 3.8
+
+[MESSAGES CONTROL]
+disable =
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    import-outside-toplevel,
+    use-dict-literal
+
+[FORMAT]
+max-line-length = 130
+
+[TYPECHECK]
+max-module-lines = 1100
+
+[DESIGN]
+max-args = 8
+max-positional-arguments = 8
+max-locals = 26
+max-branches = 20
+max-statements = 80
+max-attributes = 12
+
+[BASIC]
+good-names = i, e, p, c, m, v, fh, rw, ok

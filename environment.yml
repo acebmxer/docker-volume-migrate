@@ -1,0 +1,10 @@
+name: base
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - docker>=6.0.0
+    - rich>=13.0.0
+    - ruamel.yaml>=0.17

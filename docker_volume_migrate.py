@@ -221,7 +221,10 @@ def resolve_migration_mode(args: argparse.Namespace) -> tuple[str, Optional[str]
         return "volume", None
     console.print("\n[bold]How would you like to migrate bind mounts?[/bold]")
     console.print("  [1] Named Docker volume    [dim](recommended — Docker manages storage in /var/lib/docker/volumes)[/dim]")
-    console.print("  [2] Relocate bind mount    [dim](keeps it as a bind mount at a new host path — use this for NFS or a specific disk)[/dim]")
+    console.print(
+        "  [2] Relocate bind mount    "
+        "[dim](keeps it as a bind mount at a new host path — use this for NFS or a specific disk)[/dim]"
+    )
     console.print()
     console.print("  [dim]Note: named volumes cannot be stored at a custom path. If you need data on an NFS share")
     console.print("  or a specific mount point, choose option 2 — it relocates the bind mount to that path.[/dim]")
@@ -279,7 +282,7 @@ def plan_container(
                 if answer.lower() == "n":
                     plan.mount_plans.append(MountPlan(mount=m, volume_name="", skip=True))
                     continue
-                elif answer.lower() in ("y", "yes", ""):
+                if answer.lower() in ("y", "yes", ""):
                     target_path = suggested
                 else:
                     target_path = answer
@@ -311,7 +314,7 @@ def plan_container(
                 if answer.lower() == "n":
                     plan.mount_plans.append(MountPlan(mount=m, volume_name=candidate, skip=True))
                     continue
-                elif answer.lower() in ("y", "yes", ""):
+                if answer.lower() in ("y", "yes", ""):
                     volume_name = candidate
                 else:
                     if not validate_volume_name(answer):
@@ -380,7 +383,8 @@ def show_dry_run(plans: list[ContainerPlan]) -> None:
         step += 1
         table.add_row(str(step), "[green]CREATE[/green]", "container", plan.container.name, "with updated mount(s)")
         step += 1
-        table.add_row(str(step), "[green]START[/green]", "container", plan.container.name, "" if plan.container.state == "running" else "was stopped — will not start")
+        start_note = "" if plan.container.state == "running" else "was stopped — will not start"
+        table.add_row(str(step), "[green]START[/green]", "container", plan.container.name, start_note)
 
     console.print(table)
 
@@ -561,7 +565,7 @@ class Migrator:
                     read_only=not rw,
                 ))
             elif mtype == "tmpfs":
-                result.append(Mount(target=dest, type="tmpfs"))
+                result.append(Mount(target=dest, source="", type="tmpfs"))
         return result
 
     def reconnect_networks(
@@ -619,7 +623,7 @@ class Migrator:
                     "  Volumes/directories were NOT removed. Start the container manually if needed.[/yellow]"
                 )
                 return
-            elif stage == "container_removed" and saved_attrs:
+            if stage == "container_removed" and saved_attrs:
                 kwargs = self.extract_create_kwargs_from_attrs(saved_attrs, [])
                 console.print("  Restoring original container config...")
                 new_c = self.client.containers.create(**kwargs)
@@ -641,7 +645,7 @@ class Migrator:
                     "  [yellow]These directories were created — review and remove manually if needed:[/yellow]\n"
                     + "\n".join(f"    {d}" for d in created_dirs)
                 )
-        except Exception as rb_err:
+        except Exception as rb_err:  # pylint: disable=broad-exception-caught
             console.print(f"  [red]Rollback failed:[/red] {rb_err}")
             console.print(
                 f"  [yellow]Manual cleanup may be needed.[/yellow] "
@@ -739,7 +743,7 @@ class Migrator:
 
             return True
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             console.print(f"\n  [red]Error during migration (stage={stage}):[/red] {e}")
             log.exception("Migration failed for %s at stage %s", c.name, stage)
             self.rollback(plan, stage, created_volumes, created_dirs, saved_attrs, container)
@@ -833,7 +837,7 @@ def update_compose_file(
     yaml.preserve_quotes = True
     yaml.width = 4096
 
-    with open(compose_file) as fh:
+    with open(compose_file, encoding="utf-8") as fh:
         data = yaml.load(fh)
 
     services = data.get("services") or {}
@@ -861,7 +865,7 @@ def update_compose_file(
                     new_volumes.append(":".join([path_to_vol[resolved]] + parts[1:]))
                     updated_count += 1
                     continue
-                elif resolved in path_to_dir:
+                if resolved in path_to_dir:
                     new_volumes.append(":".join([path_to_dir[resolved]] + parts[1:]))
                     updated_count += 1
                     continue
@@ -878,7 +882,7 @@ def update_compose_file(
                 new_volumes.append(new_vol)
                 updated_count += 1
                 continue
-            elif resolved in path_to_dir:
+            if resolved in path_to_dir:
                 new_vol = ruamel_comments.CommentedMap()
                 new_vol["type"] = "bind"
                 new_vol["source"] = path_to_dir[resolved]
@@ -914,7 +918,7 @@ def update_compose_file(
     shutil.copy2(compose_file, backup)
     console.print(f"  Backup saved to [dim]{backup}[/dim]")
 
-    with open(compose_file, "w") as fh:
+    with open(compose_file, "w", encoding="utf-8") as fh:
         yaml.dump(data, fh)
 
     console.print(f"  [green]Updated {compose_file}[/green]")
@@ -925,10 +929,10 @@ def update_compose_file(
 # Signal handling
 # ---------------------------------------------------------------------------
 
-_current_plan: Optional[ContainerPlan] = None
+_CURRENT_PLAN: Optional[ContainerPlan] = None
 
 
-def _signal_handler(sig: int, frame) -> None:
+def _signal_handler(_sig: int, _frame) -> None:
     console.print("\n[red]Interrupted. Exiting cleanly...[/red]")
     sys.exit(130)
 
